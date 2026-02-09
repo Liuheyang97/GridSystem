@@ -1,68 +1,51 @@
 import mysql.connector
-import json
+import sys
+import os
 
+# 尝试导入配置
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
     from backend.config.settings import DATABASE_CONFIG
 except ImportError:
+    print("⚠️ 无法自动导入配置，使用默认配置 (请确认密码是否正确)")
     DATABASE_CONFIG = {
         'host': 'localhost', 'port': 3306, 'user': 'root',
-        'password': 'YOUR_PASSWORD', 'database': 'grid_forecast_system', 'charset': 'utf8mb4'
+        'password': 'YOUR_PASSWORD',  # ⚠️ 如果报错，请手动修改这里的密码
+        'database': 'grid_forecast_system', 'charset': 'utf8mb4'
     }
 
 
-def fix_database_v4():
-    print("🚀 开始执行 V4 数据库升级 (用户画像完善)...")
+def reset_all_2fa():
+    print("🔄 正在暴力清除所有用户的 2FA 设置...")
     conn = None
     try:
         conn = mysql.connector.connect(**DATABASE_CONFIG)
         cursor = conn.cursor()
 
-        # 1. 扩充 sys_user 表
-        print("🛠️ 正在升级 sys_user 表结构...")
-        alter_statements = [
-            "ADD COLUMN gender VARCHAR(10) DEFAULT '未知'",
-            "ADD COLUMN employee_id VARCHAR(50) COMMENT '工号'",
-            "ADD COLUMN address VARCHAR(255) COMMENT '联系地址'",
-            "ADD COLUMN avatar VARCHAR(255) DEFAULT 'default_avatar.png'",
-            "ADD COLUMN last_login_ip VARCHAR(50)",
-            "ADD COLUMN preferences JSON COMMENT '系统偏好设置'",
-            "ADD COLUMN mfa_enabled BOOLEAN DEFAULT FALSE COMMENT '双因素认证'"
-        ]
+        # 1. 清空 mfa_secret (密钥) 和 mfa_enabled (开关状态)
+        # 2. 同时强制修复 preferences 为 NULL 的情况，防止黑屏
+        sql_reset = "UPDATE sys_user SET mfa_secret = NULL, mfa_enabled = 0"
+        cursor.execute(sql_reset)
+        rows_2fa = cursor.rowcount
 
-        for stmt in alter_statements:
-            try:
-                cursor.execute(f"ALTER TABLE sys_user {stmt}")
-            except mysql.connector.errors.ProgrammingError:
-                pass  # 忽略已存在的字段错误
+        print(f"✅ 2FA 重置成功！影响用户数: {rows_2fa}")
 
-        # 2. 确保有演示用的访问日志表
-        print("🛠️ 检查日志表...")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sys_access_log (
-                log_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                user_id BIGINT,
-                ip_address VARCHAR(50),
-                action VARCHAR(50),
-                status VARCHAR(20),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # 3. 注入一些演示日志
-        print("💉 注入演示日志数据...")
-        cursor.execute(
-            "INSERT INTO sys_access_log (user_id, ip_address, action, status) VALUES (1, '192.168.1.101', 'LOGIN', 'SUCCESS')")
-        cursor.execute(
-            "INSERT INTO sys_access_log (user_id, ip_address, action, status) VALUES (1, '10.0.0.5', 'UPDATE_PROFILE', 'SUCCESS')")
+        # 3. 顺便修复可能导致黑屏的脏数据 (preferences)
+        print("🧹 正在清理脏数据 (修复黑屏隐患)...")
+        # 如果 preferences 是空的，给它设为默认值
+        import json
+        default_pref = json.dumps({"alert_method": "site"})
+        cursor.execute("UPDATE sys_user SET preferences=%s WHERE preferences IS NULL OR preferences=''",
+                       (default_pref,))
 
         conn.commit()
-        print("✅ V4 数据库升级完成！")
+        print("🎉 数据库清理完毕！现在所有人都回到了初始状态（无 2FA）。")
 
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"❌ 操作失败: {e}")
     finally:
         if conn: conn.close()
 
 
 if __name__ == "__main__":
-    fix_database_v4()
+    reset_all_2fa()

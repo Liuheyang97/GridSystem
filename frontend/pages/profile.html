@@ -126,6 +126,7 @@
                             <div v-for="log in logs" class="text-xs flex justify-between border-b border-slate-800 pb-1">
                                 <span class="text-slate-300">{{ log.created_at }}</span><span class="text-emerald-500">{{ log.operation_type || '操作' }}</span>
                             </div>
+                            <div v-if="logs.length === 0" class="text-xs text-slate-600 text-center py-4">暂无记录</div>
                         </div>
                     </div>
                 </div>
@@ -213,7 +214,9 @@
         <div class="bg-slate-800 border border-slate-600 p-6 rounded-lg w-96 shadow-2xl text-center">
             <h3 class="font-bold text-lg mb-2 text-white">绑定虚拟 MFA</h3>
             <p class="text-xs text-slate-400 mb-4">请使用 Google Authenticator 扫描</p>
-            <div id="qrcode" class="w-32 h-32 mx-auto mb-4 flex items-center justify-center bg-white p-2 rounded"></div>
+
+            <div id="qrcode" class="w-32 h-32 mx-auto mb-4 flex items-center justify-center bg-white p-2 rounded overflow-hidden">
+                </div>
 
             <input v-model="mfaCode" type="text" placeholder="输入6位验证码" class="form-input text-center tracking-widest text-lg mb-4">
             <div class="flex gap-2">
@@ -262,6 +265,7 @@
             const userList = ref([]);
             const targetUserLogs = ref([]);
             const currentAuditUser = ref('');
+            const tempSecret = ref('');
 
             const isSuperAdmin = computed(() => user.value.role_type === 'SUPER_ADMIN');
             const getToken = () => localStorage.getItem('access_token');
@@ -273,10 +277,10 @@
                     if(res.ok) {
                         const json = await res.json();
                         user.value = json.data.user;
-                        permissions.value = json.data.permissions; // 🔥 Load permissions logic
+                        permissions.value = json.data.permissions;
 
                         if(user.value.preferences) userPreferences.value = user.value.preferences;
-                        logs.value = json.data.logs || [];
+                        logs.value = json.data.logs || []; // 🔥 核心：加载审计日志
 
                         const savedExtra = localStorage.getItem('user_extra');
                         if(savedExtra) extra.value = JSON.parse(savedExtra);
@@ -293,57 +297,7 @@
                 } catch(e) { alert("保存失败"); }
             };
 
-            // 🔥 2FA Logic
-            const toggleMFA = async () => {
-                if(permissions.value.mfa_enabled) {
-                    if(confirm("关闭2FA?")) {
-                        try {
-                            const res = await fetch('/api/user/2fa/disable', { method: 'POST', headers: headers() });
-                            if(res.ok) { permissions.value.mfa_enabled = false; alert("2FA已关闭"); }
-                        } catch(e) {}
-                    }
-                } else {
-                    try {
-                        const res = await fetch('/api/user/2fa/generate', { headers: headers() });
-                        if(res.ok) {
-                            const data = await res.json();
-                            show2FAModal.value = true;
-                            nextTick(() => {
-                                document.getElementById("qrcode").innerHTML = "";
-                                new QRCode(document.getElementById("qrcode"), {
-                                    text: data.otp_auth_url || data.qrcode, // 兼容 qrcode string
-                                    width: 128, height: 128
-                                });
-                            });
-                        } else { alert("后端缺少依赖库"); }
-                    } catch(e) { alert("网络错误"); }
-                }
-            };
-            const confirmMFA = async () => {
-                if(mfaCode.value.length===6) {
-                    // Logic to confirm secret would go here, simpler to just assume enable via secret exchange if code matches logic
-                    // For this simple version, we assume user scanned and entered code.
-                    // Real implementation needs /verify endpoint logic, but for now we assume enabling triggers update.
-                    try {
-                         // Note: We need the secret from generate step to verify, usually passed in body.
-                         // Simplification: Re-using enable endpoint logic if needed or just updating UI for demo if backend handles session.
-                         // But we need the secret. Let's assume enable endpoint handles secret association or we need to store it temporarily.
-                         // Re-fetching generate to get secret if not stored?
-                         // Better: Generate endpoint returns secret, we send secret + code to enable.
-                         // Let's fix generate to store secret in ref.
-                         // Wait, generate returns secret. I need to store it.
-                         // Fixed in toggleMFA above? No, need to capture data.
-                         // Let's assume standard flow:
-                         // 1. Generate -> get secret & QR
-                         // 2. Enable -> send secret & code
-                         // I will fix toggleMFA to store secret.
-                    } catch(e) {}
-                }
-            };
-
-            // Re-write toggleMFA correctly to store secret
-            const tempSecret = ref('');
-
+            // 🔥 2FA Fix: 使用后端生成的图片 Base64，不使用 qrcode.js 渲染
             const toggleMFA_Fixed = async () => {
                  if(permissions.value.mfa_enabled) {
                     if(confirm("关闭2FA?")) {
@@ -352,18 +306,24 @@
                         alert("2FA已关闭");
                     }
                 } else {
-                    const res = await fetch('/api/user/2fa/generate', { headers: headers() });
-                    if(res.ok) {
-                        const data = await res.json();
-                        tempSecret.value = data.secret; // Store secret
-                        show2FAModal.value = true;
-                        nextTick(() => {
-                            document.getElementById("qrcode").innerHTML = "";
-                            // Check if data.qrcode is data URL or otpauth url
-                            // If it's a data URL image, display img. If otpauth, use QRCode lib.
-                            // The backend returns a data URL for image directly now.
-                            // Let's render the image directly.
-                        });
+                    try {
+                        const res = await fetch('/api/user/2fa/generate', { headers: headers() });
+                        if(res.ok) {
+                            const data = await res.json();
+                            tempSecret.value = data.secret;
+                            show2FAModal.value = true;
+
+                            // 🔥 核心修复：直接插入 img 标签显示图片，不再调用 new QRCode()
+                            nextTick(() => {
+                                const container = document.getElementById("qrcode");
+                                container.innerHTML = `<img src="${data.qrcode}" style="width:100%; height:100%">`;
+                            });
+                        } else {
+                            alert("生成失败，缺少依赖库");
+                        }
+                    } catch(e) {
+                        console.error(e);
+                        alert("网络请求失败");
                     }
                 }
             };
@@ -382,7 +342,6 @@
                 }
             };
 
-            // Image Upload
             const triggerFileUpload = () => fileInput.value.click();
             const handleFileUpload = async (event) => {
                 const file = event.target.files[0];

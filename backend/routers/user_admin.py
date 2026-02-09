@@ -10,20 +10,19 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from backend.common import state, UPLOAD_DIR
 from backend.utils.security import get_current_user, hash_pwd, verify_pwd
 
-# Attempt to import 2FA libraries
+# 尝试导入 2FA 库
 try:
     import pyotp
     import qrcode
 except ImportError:
     pyotp = None
     qrcode = None
-    print("⚠️ Warning: pyotp or qrcode not installed. 2FA will not work. Run: pip install pyotp qrcode pillow")
+    print("⚠️ 警告: 未安装 pyotp 或 qrcode，2FA 功能不可用")
 
 router = APIRouter(prefix="/api", tags=["User & Admin"])
 
-
 # ==============================================================================
-# 👤 Personal Center Interface
+# 👤 个人中心接口
 # ==============================================================================
 
 @router.get("/user/profile")
@@ -38,30 +37,29 @@ async def get_profile(request: Request):
         user = cur.fetchone()
         if not user: raise HTTPException(404, detail="User not found")
 
-        # Handle Preferences
+        # 🛡️ 偏好设置解析与容错
         if user.get('preferences'):
             if isinstance(user['preferences'], str):
                 try:
                     user['preferences'] = json.loads(user['preferences'])
+                    # 如果解析出来是那种坏掉的字典 (key是数字字符串)，强制重置
+                    if "0" in user['preferences'] and "1" in user['preferences']:
+                        user['preferences'] = {"alert_method": "site"}
                 except:
                     user['preferences'] = {"alert_method": "site"}
         else:
             user['preferences'] = {"alert_method": "site"}
 
+        # 格式化时间
         for k in ['last_login', 'created_at']:
             if isinstance(user.get(k), datetime): user[k] = user[k].strftime("%Y-%m-%d %H:%M")
 
-        # 🔥 ROBUST PERMISSION LOGIC 🔥
-        # 1. Get raw role and clean it up (uppercase, no spaces)
+        # 🔥 权限与角色逻辑 🔥
         raw_role = user.get('role_type', 'VIEWER')
         if raw_role is None: raw_role = 'VIEWER'
         role = str(raw_role).upper().strip()
 
-        # Debug print to verify role detection
-        print(f"DEBUG: User {u['uid']} has raw role '{raw_role}' -> parsed as '{role}'")
-
-        # 2. OT Domain Logic (SCADA/WAMS)
-        # Rule: Viewer has NO access. Everyone else (Operator, Admin, Super Admin) HAS access.
+        # 2. OT 域逻辑
         if role == 'VIEWER':
             ot_status = "locked"
             ot_desc = "No Access (Operator+)"
@@ -69,8 +67,7 @@ async def get_profile(request: Request):
             ot_status = "active"
             ot_desc = "Real-time Monitoring/Control"
 
-        # 3. IT Domain Logic (AMI)
-        # Rule: Only SUPER_ADMIN has access.
+        # 3. IT 域逻辑
         if role == 'SUPER_ADMIN':
             it_status = "active"
             it_desc = "Advanced Metering (Admin)"
@@ -84,13 +81,26 @@ async def get_profile(request: Request):
             {"name": "AMI (IT)", "desc": it_desc, "status": it_status}
         ]
 
+        # 📜 获取审计日志
+        logs = []
+        try:
+            cur.execute("SELECT operation_type, created_at FROM sys_operation_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 10", (u['uid'],))
+            logs = cur.fetchall()
+            for log in logs:
+                if isinstance(log['created_at'], datetime):
+                    log['created_at'] = log['created_at'].strftime("%Y-%m-%d %H:%M")
+        except Exception as e:
+            print(f"Error fetching logs: {e}")
+            logs = []
+
         response_data = {
             "user": user,
+            "logs": logs,
             "permissions": {
                 "role_label": get_role_label(role),
                 "access_domains": access_domains,
                 "can_edit_system": role == 'SUPER_ADMIN',
-                "mfa_enabled": bool(user.get('mfa_secret'))
+                "mfa_enabled": bool(user.get('mfa_secret')) # 以前端判断密钥是否存在为准
             }
         }
         return {"code": 200, "data": response_data}
@@ -123,12 +133,21 @@ async def update_profile(request: Request):
             cur.execute(f"UPDATE sys_user SET {', '.join(update_fields)} WHERE user_id=%s", tuple(params))
 
         if 'preferences' in data:
-            # Ensure it is stored as a JSON string
+            # 🔥 修复：确保正确存入 JSON，防止坏数据
             pref_data = data['preferences']
             if isinstance(pref_data, dict):
                 pref_json = json.dumps(pref_data, ensure_ascii=False)
+            elif isinstance(pref_data, str):
+                # 如果发来的是字符串，先校验是否为有效JSON，避免双重序列化
+                try:
+                    json.loads(pref_data) # 尝试解析
+                    pref_json = pref_data # 是有效的JSON串，直接用
+                except:
+                    # 不是JSON串，可能是普通字符串，封装一下
+                    pref_json = json.dumps({"alert_method": pref_data}, ensure_ascii=False)
             else:
-                pref_json = str(pref_data)
+                pref_json = json.dumps({"alert_method": "site"}) # 默认
+
             cur.execute("UPDATE sys_user SET preferences=%s WHERE user_id=%s", (pref_json, u['uid']))
 
         conn.commit()
@@ -138,15 +157,14 @@ async def update_profile(request: Request):
 
 
 # ==============================================================================
-# 🔐 2FA Interface
+# 🔐 2FA 接口 (修复版)
 # ==============================================================================
 
 @router.get("/user/2fa/generate")
 async def generate_2fa(request: Request):
     u = get_current_user(request)
-    # Check if libraries are installed
     if pyotp is None or qrcode is None:
-        raise HTTPException(501, detail="Server missing 2FA libraries. Please install pyotp and qrcode.")
+        raise HTTPException(501, detail="Server missing 2FA libraries")
 
     secret = pyotp.random_base32()
     otp_uri = pyotp.totp.TOTP(secret).provisioning_uri(name=u['sub'], issuer_name="GridMaster")
@@ -156,7 +174,11 @@ async def generate_2fa(request: Request):
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
 
-    return {"secret": secret, "qrcode": f"data:image/png;base64,{img_str}"}
+    return {
+        "secret": secret,
+        "qrcode": f"data:image/png;base64,{img_str}",
+        "otp_auth_url": otp_uri
+    }
 
 
 @router.post("/user/2fa/enable")
@@ -170,14 +192,15 @@ async def enable_2fa(request: Request):
 
     totp = pyotp.TOTP(secret)
     if not totp.verify(code):
-        raise HTTPException(400, detail="Invalid verification code")
+        raise HTTPException(400, detail="验证码错误")
 
     conn = state.db_manager.get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE sys_user SET mfa_secret=%s WHERE user_id=%s", (secret, u['uid']))
+        # 🔥 修复：同时更新 mfa_secret 和 mfa_enabled
+        cur.execute("UPDATE sys_user SET mfa_secret=%s, mfa_enabled=1 WHERE user_id=%s", (secret, u['uid']))
         conn.commit()
-        return {"code": 200, "message": "2FA Enabled"}
+        return {"code": 200, "message": "2FA 已开启"}
     finally:
         conn.close()
 
@@ -188,20 +211,19 @@ async def disable_2fa(request: Request):
     conn = state.db_manager.get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE sys_user SET mfa_secret=NULL WHERE user_id=%s", (u['uid']))
+        # 🔥 修复：同时清空密钥和关闭开关，并修复了逗号缺失的 Bug (u['uid'],)
+        cur.execute("UPDATE sys_user SET mfa_secret=NULL, mfa_enabled=0 WHERE user_id=%s", (u['uid'],))
         conn.commit()
-        return {"code": 200, "message": "2FA Disabled"}
+        return {"code": 200, "message": "2FA 已关闭"}
     finally:
         conn.close()
 
 
-# ... Helper functions and other interfaces ...
+# ... 辅助函数 ...
 
 def get_role_label(role):
-    # Ensure role is standardized for display
     role = str(role).upper().strip()
-    return {"SUPER_ADMIN": "Super Admin", "ADMIN": "System Admin", "OPERATOR": "Operator", "VIEWER": "Viewer"}.get(role,
-                                                                                                                   role)
+    return {"SUPER_ADMIN": "Super Admin", "ADMIN": "System Admin", "OPERATOR": "Operator", "VIEWER": "Viewer"}.get(role, role)
 
 
 @router.post("/user/avatar")
@@ -241,11 +263,10 @@ async def change_pwd(request: Request):
         conn.close()
 
 
-# --- Admin Interface ---
+# --- Admin 接口 ---
 @router.get("/admin/users")
 async def list_users(request: Request, page: int = 1, size: int = 10, keyword: str = ""):
     u = get_current_user(request)
-    # Role check with robustness
     role = str(u.get('role', '')).upper().strip()
     if role != 'SUPER_ADMIN': raise HTTPException(403)
 
@@ -254,7 +275,7 @@ async def list_users(request: Request, page: int = 1, size: int = 10, keyword: s
         cur = conn.cursor(dictionary=True, buffered=True)
         off = (page - 1) * size
         cur.execute(
-            "SELECT user_id, username, real_name, role_type, email, last_login FROM sys_user WHERE username LIKE %s LIMIT %s OFFSET %s",
+            "SELECT user_id, username, real_name, role_type, email, last_login, mfa_enabled FROM sys_user WHERE username LIKE %s LIMIT %s OFFSET %s",
             (f"%{keyword}%", size, off))
         users = cur.fetchall()
         cur.execute("SELECT COUNT(*) as total FROM sys_user WHERE username LIKE %s", (f"%{keyword}%",))

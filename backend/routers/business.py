@@ -31,7 +31,6 @@ router = APIRouter(prefix="/api", tags=["Business"])
 REAL_DATASET = None
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
 NPY_PATH = os.path.join(DATA_DIR, 'gnn_X_2016_fusion.npy')
-# 优先读取这两个文件之一
 MAT_FILE_1 = os.path.join(DATA_DIR, 'ACTIVSg2000.m')
 MAT_FILE_2 = os.path.join(DATA_DIR, 'case_ACTIVSg2000.m')
 
@@ -58,27 +57,17 @@ load_real_dataset()
 
 
 def parse_and_distribute_topology():
-    """
-    🔥 核心逻辑：强制按 ACTIVSg2000.m 的比例分配节点类型
-    不再依赖数据曲线指纹，直接'按户口本'发身份证。
-    """
     global NODE_METADATA_MAP, TOPOLOGY_CACHE
     if TOPOLOGY_CACHE: return TOPOLOGY_CACHE
 
     print("📊 开始构建全网拓扑结构...")
-
-    # 1. 默认统计 (如果没文件，就用 ACTIVSg2000 的标准数据)
-    # Wind: 87, Solar: 22, Hydro: 46
     counts = {"wind": 87, "solar": 22, "hydro": 46, "thermal": 400}
-
-    # 2. 尝试从文件读取真实数量
     target_file = MAT_FILE_1 if os.path.exists(MAT_FILE_1) else (MAT_FILE_2 if os.path.exists(MAT_FILE_2) else None)
 
     if target_file:
         try:
             with open(target_file, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-                # 统计各类型出现次数
                 c_wind = len(re.findall(r"'wind'", content, re.IGNORECASE))
                 c_solar = len(re.findall(r"'solar'", content, re.IGNORECASE))
                 c_hydro = len(re.findall(r"'hydro'", content, re.IGNORECASE))
@@ -91,45 +80,24 @@ def parse_and_distribute_topology():
                     counts["solar"] = c_solar
                     counts["hydro"] = c_hydro
                     counts["thermal"] = c_ng + c_coal + c_nuclear
-                    print(
-                        f"✅ 从 .m 文件读取到真实配置: Wind={c_wind}, Solar={c_solar}, Hydro={c_hydro}, Thermal={counts['thermal']}")
         except Exception as e:
             print(f"⚠️ 解析 .m 文件失败，使用默认比例: {e}")
 
-    # 3. 准备 1351 个节点的坑位
     total_nodes = 1351
-    # 按照优先级，先填满新能源
-    # 因为我们剔除孤岛时，肯定优先保留了重要的发电机节点
-
     assigned_types = []
-
-    # 必须保证有这些数量
     assigned_types.extend(['wind'] * counts['wind'])
     assigned_types.extend(['solar'] * counts['solar'])
     assigned_types.extend(['hydro'] * counts['hydro'])
-
-    # 剩下的位置，按照 Thermal 和 Load 的比例填充
     remaining_slots = total_nodes - len(assigned_types)
-
-    # 假设 Thermal 占剩余的 30%
     n_thermal = min(counts['thermal'], int(remaining_slots * 0.3))
     assigned_types.extend(['thermal'] * n_thermal)
-
-    # 剩下的全部是 Load
     n_load = total_nodes - len(assigned_types)
     assigned_types.extend(['load'] * n_load)
-
-    # 截断（防止溢出）
     assigned_types = assigned_types[:total_nodes]
 
-    print(
-        f"✅ 最终分配: Wind={assigned_types.count('wind')}, Solar={assigned_types.count('solar')}, Load={assigned_types.count('load')}")
-
-    # 4. 打乱顺序 (使用固定种子，保证 Node 1 永远是同一个类型)
     rng = random.Random(2026)
     rng.shuffle(assigned_types)
 
-    # 5. 构建前端结构
     categories = {
         "wind": {"label": "风力发电 (Wind)", "icon": "ri-windy-line", "color": "text-emerald-400", "nodes": []},
         "solar": {"label": "光伏发电 (Solar)", "icon": "ri-sun-line", "color": "text-yellow-400", "nodes": []},
@@ -140,17 +108,13 @@ def parse_and_distribute_topology():
 
     for i, type_key in enumerate(assigned_types):
         node_id = i + 1
-        # 记录元数据
         NODE_METADATA_MAP[node_id] = {"real_id": node_id, "type": type_key}
-
-        # 添加到分类树
         categories[type_key]["nodes"].append({
             "id": node_id,
             "name": f"节点 {node_id}",
             "voltage": "220kV"
         })
 
-    # 内部排序
     for cat in categories.values():
         cat["nodes"].sort(key=lambda x: x["id"])
 
@@ -161,9 +125,6 @@ def parse_and_distribute_topology():
     return TOPOLOGY_CACHE
 
 
-# ==============================================================================
-# 🔥 辅助函数
-# ==============================================================================
 def get_node_type_info(node_id: int):
     if not NODE_METADATA_MAP: parse_and_distribute_topology()
     return NODE_METADATA_MAP.get(node_id, {"real_id": node_id, "type": "load"})
@@ -191,7 +152,6 @@ def get_node_max_capacity(node_id: int):
 
 
 def get_node_val(node_id: int, dt: datetime, force_real_only=False):
-    # 1. 真实值
     if dt.year == 2016 and REAL_DATASET is not None:
         try:
             start_2016 = datetime(2016, 1, 1, 0, 0)
@@ -206,17 +166,13 @@ def get_node_val(node_id: int, dt: datetime, force_real_only=False):
 
     if force_real_only: return None
 
-    # 2. 智能模拟 (未来年份)
     stats = get_node_stats(node_id)
     base = stats['mean'] if stats else (100 + (node_id % 50) * 2)
-
-    # 🔥 根据类型模拟曲线
     meta = get_node_type_info(node_id)
     ntype = meta['type']
     hour = dt.hour + dt.minute / 60.0
 
     if ntype == 'solar':
-        # 强制白天有电，晚上0
         if 6 <= hour <= 19:
             pattern = math.sin((hour - 6) * math.pi / 13);
             pattern = max(0, pattern) * 3.0
@@ -224,11 +180,9 @@ def get_node_val(node_id: int, dt: datetime, force_real_only=False):
             pattern = 0
         season = 1.3 if dt.month in [6, 7, 8] else 0.7
     elif ntype == 'wind':
-        # 强制夜间大
         pattern = 1 + 0.4 * math.cos((hour) * math.pi / 12)
         season = 1.3 if dt.month in [12, 1, 2] else 0.8
     else:
-        # 普通负荷
         pattern = 1 + 0.5 * (math.sin((hour - 6) * math.pi / 12) ** 2 + 0.5 * math.sin((hour - 18) * math.pi / 6) ** 2)
         season = 1.2 if dt.month in [6, 7, 8, 12, 1, 2] else 1.0
 
@@ -249,6 +203,7 @@ async def get_topology_structure(request: Request):
 @router.get("/chat/contacts")
 async def chat_contacts(request: Request):
     u = get_current_user(request)
+    if not u: raise HTTPException(401, detail="Not logged in")  # 🛡️ 安检门
     conn = state.db_manager.get_connection()
     try:
         cur = conn.cursor(dictionary=True, buffered=True)
@@ -287,6 +242,7 @@ async def chat_upload(request: Request, file: UploadFile = File(...)):
 @router.get("/chat/history")
 async def chat_history(request: Request, partner_id: int):
     u = get_current_user(request)
+    if not u: raise HTTPException(401, detail="Not logged in")  # 🛡️ 安检门
     conn = state.db_manager.get_connection()
     try:
         cur = conn.cursor(dictionary=True, buffered=True)
@@ -311,6 +267,7 @@ async def chat_history(request: Request, partner_id: int):
 @router.post("/chat/send")
 async def chat_send(request: Request):
     u = get_current_user(request);
+    if not u: raise HTTPException(401, detail="Not logged in")  # 🛡️ 安检门
     data = await request.json()
     receiver_id = int(data.get('receiver_id'));
     raw_content = data.get('content')
@@ -371,12 +328,10 @@ async def execute_predict(request: Request, bg: BackgroundTasks):
     for i in range(horizon):
         curr_dt = target_dt + timedelta(hours=i)
         time_axis.append(curr_dt.strftime("%Y-%m-%d %H:%M"))
-
         base_for_pred = get_node_val(bus_id, curr_dt, force_real_only=False)
         np.random.seed(int(curr_dt.timestamp()) + bus_id)
         pred = base_for_pred * (1 + np.random.normal(0, 0.03))
         pred_vals.append(round(pred, 2))
-
         real_val = get_node_val(bus_id, curr_dt, force_real_only=True)
         truth_vals.append(round(real_val, 2) if real_val is not None else None)
 
@@ -386,7 +341,6 @@ async def execute_predict(request: Request, bg: BackgroundTasks):
         risk = "Critical"
     elif mx > rated_capacity * 0.9:
         risk = "Warning"
-
     capacity_usage_val = (mx / rated_capacity) * 100 if rated_capacity > 0 else 0
 
     if ai_assistant:
@@ -444,7 +398,10 @@ async def m_over():
 @router.get("/collect/detail")
 async def c_detail(source_type: str, request: Request):
     u = get_current_user(request)
-    if source_type == 'ami' and u['role'] != 'SUPER_ADMIN': return [{"access_denied": True, "message": "权限不足"}]
+    if source_type == 'ami':
+        if not u: raise HTTPException(401, detail="Not logged in")  # 🛡️ 安检门
+        if u['role'] != 'SUPER_ADMIN': return [{"access_denied": True, "message": "权限不足"}]
+
     if professional_collector:
         if source_type == 'scada': return professional_collector.fetch_scada_realtime(1)
         if source_type == 'pmu': return professional_collector.fetch_pmu_realtime(1)
@@ -473,6 +430,8 @@ async def w_city(adcode: str):
 @router.get("/history")
 async def get_history(request: Request):
     u = get_current_user(request)
+    if not u: raise HTTPException(401, detail="Not logged in")  # 🛡️ 修复：这里就是您刚才报错的地方
+
     conn = state.db_manager.get_connection()
     try:
         cur = conn.cursor(dictionary=True, buffered=True)

@@ -106,7 +106,7 @@
                 <p class="text-gray-400 text-sm mt-1">电网调度控制系统 | 安全接入</p>
             </div>
 
-            <form @submit.prevent="handleLogin" class="space-y-4">
+            <form @submit.prevent="handleLogin()" class="space-y-4">
                 <div class="input-group">
                     <input v-model="form.username" type="text" class="input-field" placeholder="调度员工号 / 用户名" required>
                     <i class="ri-user-line input-icon"></i>
@@ -208,6 +208,28 @@
             </div>
         </transition>
 
+        <transition name="modal">
+            <div v-if="show2FAModal" class="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-[60]">
+                <div class="bg-slate-800 border border-emerald-500/50 p-8 rounded-lg w-80 shadow-2xl relative text-center">
+                    <div class="w-16 h-16 rounded-full bg-emerald-900/30 mx-auto mb-4 flex items-center justify-center border border-emerald-500/30">
+                        <i class="ri-shield-check-fill text-3xl text-emerald-400"></i>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-1">双重身份验证</h3>
+                    <p class="text-xs text-emerald-500/80 mb-6">检测到您开启了 2FA 保护，请输入动态码</p>
+
+                    <input v-model="mfaCode" type="text" placeholder="000 000" maxlength="6"
+                           class="w-full bg-slate-900 border border-emerald-700 text-emerald-400 text-center text-2xl tracking-[0.5em] font-mono py-3 rounded mb-4 focus:outline-none focus:border-emerald-400">
+
+                    <button @click="submitMFA" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded transition shadow-lg shadow-emerald-900/50">
+                        验证登录
+                    </button>
+                    <button @click="show2FAModal=false; loading=false" class="mt-3 text-xs text-slate-500 hover:text-slate-300">
+                        取消
+                    </button>
+                </div>
+            </div>
+        </transition>
+
     </div>
 
     <script>
@@ -228,6 +250,10 @@
                 const showResetModal = ref(false);
                 const resetForm = ref({ username: '', email: '', code: '', new_password: '' });
                 const timer = ref(0);
+
+                // --- 🔥 [新增] 2FA 变量 ---
+                const show2FAModal = ref(false);
+                const mfaCode = ref('');
 
                 // 生成本地图形验证码
                 const refreshCaptcha = () => {
@@ -265,30 +291,63 @@
                     setTimeout(() => msg.value = '', 3000);
                 };
 
-                // --- 核心：登录逻辑 ---
-                const handleLogin = async () => {
-                    if(!form.value.captcha || form.value.captcha.toUpperCase() !== captchaCode.value) {
-                        showMsg("图形验证码错误"); refreshCaptcha(); return;
+                // --- 🔥 [修改] 登录逻辑支持 2FA ---
+                const handleLogin = async (isMFARetry = false) => {
+                    // 如果不是 2FA 重试，先校验图形验证码
+                    if(!isMFARetry) {
+                        if(!form.value.captcha || form.value.captcha.toUpperCase() !== captchaCode.value) {
+                            showMsg("图形验证码错误"); refreshCaptcha(); return;
+                        }
                     }
+
                     loading.value = true;
                     try {
+                        const payload = {
+                            username: form.value.username,
+                            password: form.value.password
+                        };
+                        // 如果是第二次尝试，带上 2FA 码
+                        if(isMFARetry) {
+                            payload.verification_code = mfaCode.value;
+                        }
+
                         const res = await fetch('/api/auth/login', {
                             method: 'POST', headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({username: form.value.username, password: form.value.password})
+                            body: JSON.stringify(payload)
                         });
                         const data = await res.json();
-                        if (res.ok) {
+
+                        // 🔥 核心修改：检查是否需要 2FA
+                        if (data.code === 206) {
+                            show2FAModal.value = true; // 弹出 2FA 框
+                            // loading 保持为 true，因为用户还没真正进去
+                            return;
+                        }
+
+                        if (res.ok && data.code === 200) {
                             localStorage.setItem('access_token', data.data.access_token);
                             localStorage.setItem('user_info', JSON.stringify(data.data.user));
                             window.location.href = '/dashboard'; // 成功后跳转
                         } else {
-                            showMsg(data.detail || "登录失败"); refreshCaptcha();
+                            showMsg(data.detail || "登录失败");
+                            if(!isMFARetry) refreshCaptcha(); // 只有第一次失败才刷新图形验证码
+                            if(isMFARetry) mfaCode.value = ''; // 2FA 失败清空输入框
+                            loading.value = false;
                         }
-                    } catch(e) { showMsg("无法连接到服务器"); }
-                    finally { loading.value = false; }
+                    } catch(e) {
+                        console.error(e);
+                        showMsg("无法连接到服务器");
+                        loading.value = false;
+                    }
                 };
 
-                // --- 核心：发送找回密码验证码 ---
+                // 🔥 [新增] 提交 2FA
+                const submitMFA = () => {
+                    if(!mfaCode.value || mfaCode.value.length < 6) return alert("请输入6位验证码");
+                    handleLogin(true); // 再次调用登录，标记为重试
+                };
+
+                // --- 发送找回密码验证码 ---
                 const sendResetCode = async () => {
                     if(!resetForm.value.username || !resetForm.value.email) {
                         return alert("请先填写用户名和邮箱，以便系统核对身份");
@@ -322,7 +381,7 @@
                     }
                 };
 
-                // --- 核心：执行重置 ---
+                // --- 执行重置 ---
                 const handleReset = async () => {
                     if(!resetForm.value.code || !resetForm.value.new_password) return alert("请填写完整信息");
                     loading.value = true;
@@ -355,8 +414,9 @@
                 return {
                     loading, loadProgress, sysStatus, form, captchaCode, captchaCanvas, msg, msgType,
                     handleLogin, refreshCaptcha,
-                    // 导出新功能的变量和方法
-                    showResetModal, resetForm, timer, sendResetCode, handleReset
+                    showResetModal, resetForm, timer, sendResetCode, handleReset,
+                    // 🔥 导出新增变量
+                    show2FAModal, mfaCode, submitMFA
                 };
             }
         }).mount('#app');
