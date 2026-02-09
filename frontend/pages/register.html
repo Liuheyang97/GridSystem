@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>注册新账户 - 智能电网调度系统</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Roboto+Mono:wght@400;500&display=swap');
+
+        body {
+            background-color: #0b1121;
+            font-family: "Microsoft YaHei", 'Rajdhani', sans-serif;
+            background-image:
+                linear-gradient(rgba(11, 17, 33, 0.95), rgba(11, 17, 33, 0.98)),
+                url('https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2072&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+        }
+
+        .industrial-border {
+            border: 1px solid #334155;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            background: rgba(15, 23, 42, 0.9);
+            backdrop-filter: blur(10px);
+        }
+
+        .form-label {
+            color: #94a3b8;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.25rem;
+            display: block;
+        }
+
+        .form-input {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            padding: 0.5rem 0.75rem;
+            transition: all 0.3s;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.9rem;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 1px #3b82f6;
+            background: #1e293b;
+        }
+
+        /* 按钮禁用样式 */
+        button:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body class="h-screen flex items-center justify-center">
+
+    <div id="app" class="w-full max-w-lg p-4">
+        <div class="industrial-border rounded-xl p-8 border-t-4 border-t-blue-600">
+            <h2 class="text-2xl font-bold text-white mb-1 flex items-center">
+                <i class="ri-user-add-line mr-3 text-blue-500"></i>
+                NEW USER REGISTRATION
+            </h2>
+            <p class="text-gray-500 text-xs mb-6 uppercase tracking-widest border-b border-gray-700 pb-4">
+                System Access Application Protocol
+            </p>
+
+            <form @submit.prevent="handleRegister" class="space-y-4">
+                <div>
+                    <label class="form-label">Username (Login ID)</label>
+                    <div class="relative">
+                        <input v-model="form.username" type="text" class="form-input w-full rounded"
+                               @blur="checkExists('username')" required placeholder="设置您的登录账号">
+                        <div v-if="errors.username" class="absolute right-2 top-2 text-red-500 text-xs">
+                            <i class="ri-close-circle-line"></i> {{ errors.username }}
+                        </div>
+                        <div v-else-if="form.username && !errors.username" class="absolute right-2 top-2 text-green-500 text-xs">
+                            <i class="ri-checkbox-circle-line"></i> 可用
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-blue-900/10 p-3 rounded border border-blue-500/20">
+                    <label class="form-label text-blue-400">Security Verification</label>
+
+                    <div class="flex gap-2 mb-3">
+                        <input v-model="form.email" type="email" class="form-input flex-1 rounded"
+                               required placeholder="输入您的真实邮箱">
+                        <button type="button" @click="sendCode" :disabled="timer > 0 || !form.email"
+                                class="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 text-white px-3 py-1 rounded text-xs min-w-[100px] transition-colors border border-blue-500">
+                            {{ timer > 0 ? timer + 's 后重试' : '获取验证码' }}
+                        </button>
+                    </div>
+
+                    <div>
+                        <input v-model="form.code" type="text" class="form-input w-full rounded text-center tracking-[0.5em] font-bold text-yellow-400"
+                               required placeholder="在此输入6位验证码" maxlength="6">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="form-label">Password</label>
+                        <input v-model="form.password" type="password" class="form-input w-full rounded"
+                               required placeholder="设置密码">
+                    </div>
+                    <div>
+                        <label class="form-label">Confirm Password</label>
+                        <input v-model="form.confirm_password" type="password"
+                               class="form-input w-full rounded"
+                               :class="{'border-red-500': passwordMismatch}"
+                               required placeholder="再次输入密码">
+                    </div>
+                </div>
+
+                <button type="submit" :disabled="loading"
+                        class="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 text-white font-bold py-3 px-4 rounded mt-4 transition-all duration-300 transform hover:scale-[1.01] shadow-lg shadow-blue-900/50">
+                    <span v-if="loading"><i class="ri-loader-4-line animate-spin"></i> 处理中...</span>
+                    <span v-else>立即注册 (SUBMIT)</span>
+                </button>
+            </form>
+
+            <div class="mt-6 flex justify-center">
+                <a href="/" class="text-sm text-gray-400 hover:text-white flex items-center gap-1 transition-colors">
+                    <i class="ri-arrow-left-line"></i> 返回登录
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed } = Vue;
+
+        createApp({
+            setup() {
+                const form = ref({
+                    username: '',
+                    password: '',
+                    confirm_password: '',
+                    email: '',
+                    code: ''
+                });
+                const errors = ref({ username: '' });
+                const loading = ref(false);
+                const timer = ref(0);
+
+                const passwordMismatch = computed(() => {
+                    return form.value.password && form.value.confirm_password &&
+                           form.value.password !== form.value.confirm_password;
+                });
+
+                const checkExists = async (field) => {
+                    if(!form.value[field]) return;
+                    try {
+                        const res = await fetch('/api/auth/check_exists', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ field, value: form.value[field] })
+                        });
+                        const data = await res.json();
+                        if(data.exists) errors.value[field] = "该用户名已被占用";
+                        else errors.value[field] = "";
+                    } catch(e) {}
+                };
+
+                const sendCode = async () => {
+                    if(!form.value.email) return alert("请先填写邮箱地址");
+                    if(errors.value.username) return alert("用户名不可用，请更换");
+
+                    try {
+                        timer.value = 60;
+                        const t = setInterval(() => {
+                            timer.value--;
+                            if(timer.value <= 0) clearInterval(t);
+                        }, 1000);
+
+                        const res = await fetch('/api/auth/send_code', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                email: form.value.email,
+                                username: form.value.username,
+                                type: 'register'
+                            })
+                        });
+                        const data = await res.json();
+                        if(res.ok) {
+                            alert("✅ 验证码已发送！请查看邮件 (或后台日志)");
+                        } else {
+                            alert(data.detail || "发送失败");
+                            timer.value = 0;
+                        }
+                    } catch(e) {
+                        alert("网络连接失败");
+                        timer.value = 0;
+                    }
+                };
+
+                const handleRegister = async () => {
+                    // 🔥 这里是关键：点击按钮后，逐个检查，告诉用户缺什么
+                    if(!form.value.username) return alert("请输入用户名");
+                    if(errors.value.username) return alert("用户名已存在，请修改");
+                    if(!form.value.email) return alert("请输入邮箱");
+                    if(!form.value.code) return alert("请点击'获取验证码'并填写");
+                    if(!form.value.password) return alert("请设置密码");
+                    if(passwordMismatch.value) return alert("两次输入的密码不一致");
+
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/api/auth/register', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(form.value)
+                        });
+                        const data = await res.json();
+
+                        if(res.ok) {
+                            alert("✅ 注册成功！即将跳转登录页面...");
+                            window.location.href = '/';
+                        } else {
+                            alert("❌ 注册失败: " + (data.detail || "未知错误"));
+                        }
+                    } catch(e) {
+                        alert("服务器连接失败");
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                return { form, errors, loading, timer, passwordMismatch, checkExists, sendCode, handleRegister };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

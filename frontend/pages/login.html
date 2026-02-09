@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>电力调度控制中心 - 安全接入网关</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Roboto+Mono:wght@400;500&display=swap');
+
+        body {
+            background-color: #0b1121;
+            font-family: "Microsoft YaHei", 'Rajdhani', sans-serif;
+            background-image:
+                linear-gradient(rgba(11, 17, 33, 0.92), rgba(11, 17, 33, 0.95)),
+                url('https://images.unsplash.com/photo-1558494949-ef526b0042a0?q=80&w=2668&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+            overflow: hidden; /* 防止弹窗导致滚动条跳动 */
+        }
+
+        .industrial-border {
+            border: 1px solid #1e3a8a;
+            box-shadow: 0 0 0 1px rgba(30, 58, 138, 0.3), 0 0 20px rgba(37, 99, 235, 0.1);
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+
+        .input-field {
+            width: 100%;
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid #334155;
+            padding: 12px 16px 12px 45px;
+            color: #e2e8f0;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+            background: rgba(30, 41, 59, 0.8);
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #64748b;
+            transition: color 0.3s;
+        }
+
+        .input-field:focus + .input-icon { color: #3b82f6; }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            border: 1px solid #3b82f6;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-primary::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(to right, transparent, rgba(255,255,255,0.1), transparent);
+            transform: rotate(45deg);
+            animation: shine 3s infinite;
+        }
+
+        @keyframes shine { 0% { transform: translateX(-100%) rotate(45deg); } 100% { transform: translateX(100%) rotate(45deg); } }
+
+        /* 弹窗样式 */
+        .modal-enter-active, .modal-leave-active { transition: opacity 0.3s ease; }
+        .modal-enter-from, .modal-leave-to { opacity: 0; }
+    </style>
+</head>
+<body class="h-screen flex items-center justify-center relative">
+
+    <div id="app" class="w-full max-w-md p-6 relative z-10">
+        <div class="industrial-border rounded-lg p-8 relative">
+            <div class="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-blue-500"></div>
+            <div class="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-blue-500"></div>
+            <div class="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-blue-500"></div>
+            <div class="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-blue-500"></div>
+
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-900/30 mb-4 border border-blue-500/30">
+                    <i class="ri-radar-line text-3xl text-blue-400 animate-pulse"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-white tracking-wider">GRID MASTER <span class="text-blue-500 text-xs align-top">V9.6</span></h1>
+                <p class="text-gray-400 text-sm mt-1">电网调度控制系统 | 安全接入</p>
+            </div>
+
+            <form @submit.prevent="handleLogin" class="space-y-4">
+                <div class="input-group">
+                    <input v-model="form.username" type="text" class="input-field" placeholder="调度员工号 / 用户名" required>
+                    <i class="ri-user-line input-icon"></i>
+                </div>
+
+                <div class="input-group">
+                    <input v-model="form.password" type="password" class="input-field" placeholder="访问密钥" required>
+                    <i class="ri-lock-2-line input-icon"></i>
+                </div>
+
+                <div class="flex gap-3 mb-4">
+                    <div class="relative flex-1">
+                        <input v-model="form.captcha" type="text" class="input-field" placeholder="验证码" required maxlength="4">
+                        <i class="ri-shield-keyhole-line input-icon"></i>
+                    </div>
+                    <div class="w-24 h-[46px] bg-gray-700 rounded border border-gray-600 cursor-pointer overflow-hidden"
+                         @click="refreshCaptcha" title="点击刷新">
+                         <canvas ref="captchaCanvas" width="96" height="46"></canvas>
+                    </div>
+                </div>
+
+                <div v-if="msg" :class="`text-xs p-2 rounded text-center mb-2 ${msgType==='error'?'bg-red-900/50 text-red-200':'bg-green-900/50 text-green-200'}`">
+                    <i :class="msgType==='error'?'ri-error-warning-line':'ri-checkbox-circle-line'"></i> {{ msg }}
+                </div>
+
+                <div class="flex justify-between items-center text-sm text-gray-400 mb-6">
+                    <label class="flex items-center cursor-pointer hover:text-blue-400">
+                        <input type="checkbox" class="mr-2 bg-transparent border-gray-600 rounded focus:ring-0"> 记住设备
+                    </label>
+                    <a href="#" @click.prevent="showResetModal=true" class="hover:text-blue-400 transition-colors">忘记密码?</a>
+                </div>
+
+                <button type="submit" :disabled="loading"
+                    class="btn-primary w-full text-white font-bold py-3 rounded shadow-lg hover:shadow-blue-500/30 transition-all transform active:scale-95 flex justify-center items-center gap-2">
+                    <span v-if="loading"><i class="ri-loader-4-line animate-spin"></i> 身份验证中...</span>
+                    <span v-else>立即登录 <i class="ri-arrow-right-line"></i></span>
+                </button>
+            </form>
+
+            <div class="mt-6 text-center">
+                <p class="text-gray-500 text-xs">
+                    未注册设备? <a href="/register.html" class="text-blue-500 hover:text-blue-400 underline decoration-dotted">申请入网许可</a>
+                </p>
+            </div>
+        </div>
+
+        <div class="absolute -bottom-16 left-0 w-full text-center">
+            <div class="inline-flex items-center gap-4 text-[10px] text-gray-600 font-mono bg-black/40 px-4 py-1 rounded-full border border-gray-800">
+                <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> {{ sysStatus }}</span>
+                <span>LATENCY: {{ Math.floor(Math.random()*20+10) }}ms</span>
+                <span>ENCRYPTION: AES-256</span>
+            </div>
+        </div>
+
+        <transition name="modal">
+            <div v-if="showResetModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+                <div class="bg-gray-900 border border-blue-500/50 p-8 rounded-lg w-96 shadow-2xl relative">
+                    <button @click="showResetModal=false" class="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors">
+                        <i class="ri-close-line text-2xl"></i>
+                    </button>
+
+                    <h3 class="text-xl font-bold text-blue-400 mb-1 flex items-center">
+                        <i class="ri-lock-password-line mr-2"></i> 重置密码
+                    </h3>
+                    <p class="text-xs text-gray-500 mb-6">请输入您的账号及绑定邮箱以验证身份</p>
+
+                    <div class="space-y-4">
+                        <div>
+                            <input v-model="resetForm.username" type="text" placeholder="输入用户名"
+                                class="w-full bg-gray-800 border border-gray-700 text-white px-4 py-2 rounded focus:border-blue-500 outline-none text-sm transition-colors focus:bg-gray-800/80">
+                        </div>
+
+                        <div class="flex gap-2">
+                            <input v-model="resetForm.email" type="email" placeholder="绑定的邮箱"
+                                class="flex-1 bg-gray-800 border border-gray-700 text-white px-4 py-2 rounded focus:border-blue-500 outline-none text-sm">
+                            <button @click="sendResetCode" :disabled="timer > 0 || !resetForm.email"
+                                class="bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed hover:bg-blue-600 text-white px-3 py-2 rounded text-xs whitespace-nowrap transition-colors min-w-[90px]">
+                                {{ timer > 0 ? timer + 's 后重试' : '获取验证码' }}
+                            </button>
+                        </div>
+
+                        <div>
+                            <input v-model="resetForm.code" type="text" placeholder="请输入6位邮件验证码" maxlength="6"
+                                class="w-full bg-gray-800 border border-gray-700 text-white px-4 py-2 rounded focus:border-blue-500 outline-none text-sm tracking-widest text-center font-mono">
+                        </div>
+
+                        <div>
+                            <input v-model="resetForm.new_password" type="password" placeholder="设置新密码"
+                                class="w-full bg-gray-800 border border-gray-700 text-white px-4 py-2 rounded focus:border-blue-500 outline-none text-sm">
+                        </div>
+
+                        <button @click="handleReset" :disabled="loading"
+                            class="w-full bg-green-700 hover:bg-green-600 text-white py-2 rounded font-bold mt-2 shadow-lg transition-all text-sm flex justify-center items-center">
+                            <span v-if="loading"><i class="ri-loader-4-line animate-spin"></i> 处理中...</span>
+                            <span v-else>确认重置密码</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </transition>
+
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                const loading = ref(false);
+                const loadProgress = ref(0);
+                const sysStatus = ref("SYSTEM ONLINE");
+                const form = ref({ username: '', password: '', captcha: '' });
+                const captchaCode = ref('');
+                const captchaCanvas = ref(null);
+                const msg = ref('');
+                const msgType = ref('error');
+
+                // --- 找回密码相关变量 ---
+                const showResetModal = ref(false);
+                const resetForm = ref({ username: '', email: '', code: '', new_password: '' });
+                const timer = ref(0);
+
+                // 生成本地图形验证码
+                const refreshCaptcha = () => {
+                    const ctx = captchaCanvas.value.getContext('2d');
+                    ctx.clearRect(0, 0, 96, 46);
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(0, 0, 96, 46);
+
+                    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+                    let code = '';
+                    for(let i=0; i<4; i++) {
+                        const char = chars[Math.floor(Math.random() * chars.length)];
+                        code += char;
+                        ctx.font = '24px "Rajdhani"';
+                        ctx.fillStyle = `hsl(${Math.random()*360}, 70%, 70%)`;
+                        ctx.save();
+                        ctx.translate(10 + i*20, 30);
+                        ctx.rotate((Math.random() - 0.5) * 0.4);
+                        ctx.fillText(char, 0, 0);
+                        ctx.restore();
+                    }
+                    // 干扰线
+                    for(let i=0; i<3; i++) {
+                        ctx.beginPath();
+                        ctx.moveTo(Math.random()*96, Math.random()*46);
+                        ctx.lineTo(Math.random()*96, Math.random()*46);
+                        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+                        ctx.stroke();
+                    }
+                    captchaCode.value = code;
+                };
+
+                const showMsg = (text, type='error') => {
+                    msg.value = text; msgType.value = type;
+                    setTimeout(() => msg.value = '', 3000);
+                };
+
+                // --- 核心：登录逻辑 ---
+                const handleLogin = async () => {
+                    if(!form.value.captcha || form.value.captcha.toUpperCase() !== captchaCode.value) {
+                        showMsg("图形验证码错误"); refreshCaptcha(); return;
+                    }
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/api/auth/login', {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({username: form.value.username, password: form.value.password})
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            localStorage.setItem('access_token', data.data.access_token);
+                            localStorage.setItem('user_info', JSON.stringify(data.data.user));
+                            window.location.href = '/dashboard'; // 成功后跳转
+                        } else {
+                            showMsg(data.detail || "登录失败"); refreshCaptcha();
+                        }
+                    } catch(e) { showMsg("无法连接到服务器"); }
+                    finally { loading.value = false; }
+                };
+
+                // --- 核心：发送找回密码验证码 ---
+                const sendResetCode = async () => {
+                    if(!resetForm.value.username || !resetForm.value.email) {
+                        return alert("请先填写用户名和邮箱，以便系统核对身份");
+                    }
+                    try {
+                        // 倒计时逻辑
+                        timer.value = 60;
+                        const t = setInterval(() => {
+                            timer.value--;
+                            if(timer.value <= 0) clearInterval(t);
+                        }, 1000);
+
+                        const res = await fetch('/api/auth/send_code', {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                email: resetForm.value.email,
+                                username: resetForm.value.username,
+                                type: 'reset'
+                            })
+                        });
+                        const data = await res.json();
+                        if(!res.ok) {
+                            alert(data.detail || "发送失败");
+                            timer.value = 0; // 失败则重置倒计时
+                        } else {
+                            alert("✅ 验证码已发送到您的邮箱，请查收！");
+                        }
+                    } catch(e) {
+                        alert("网络请求失败");
+                        timer.value = 0;
+                    }
+                };
+
+                // --- 核心：执行重置 ---
+                const handleReset = async () => {
+                    if(!resetForm.value.code || !resetForm.value.new_password) return alert("请填写完整信息");
+                    loading.value = true;
+                    try {
+                        const res = await fetch('/api/auth/reset_password', {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(resetForm.value)
+                        });
+                        const data = await res.json();
+                        if(res.ok) {
+                            alert("🎉 密码重置成功！请使用新密码登录。");
+                            showResetModal.value = false;
+                            resetForm.value = { username:'', email:'', code:'', new_password:'' };
+                        } else {
+                            alert(data.detail || "重置失败");
+                        }
+                    } catch(e) { alert("网络错误"); }
+                    finally { loading.value = false; }
+                };
+
+                onMounted(() => {
+                    refreshCaptcha();
+                    // 模拟系统加载动画
+                    const interval = setInterval(() => {
+                        if(loadProgress.value < 100) loadProgress.value += 5;
+                        else clearInterval(interval);
+                    }, 50);
+                });
+
+                return {
+                    loading, loadProgress, sysStatus, form, captchaCode, captchaCanvas, msg, msgType,
+                    handleLogin, refreshCaptcha,
+                    // 导出新功能的变量和方法
+                    showResetModal, resetForm, timer, sendResetCode, handleReset
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
